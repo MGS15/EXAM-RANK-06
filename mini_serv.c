@@ -1,30 +1,33 @@
-#include <unistd.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
 
-int		ft_strlen(const char *str);
 void	panic(const char *msg);
-int		integrateNewConnection(int max_fds, int masterSocket, fd_set *fds, struct sockaddr *addr, socklen_t *len);
-void	broadcast(int max_fds, int socketMaster, char *msg, fd_set *fds);
+size_t	ft_strlen(const char *str);
+void	new_connection(int master, struct sockaddr *addr, socklen_t *len);
+void	broadcast(int master, int max, int exclude);
+void	disconnect(int master, int index);
 
-int	clients[9999] = { -1 };
-int	id = 1;
+char	send_buffer[99999];
+char	read_buffer[99999];
+fd_set	set;
+fd_set	r_set;
+fd_set	w_set;
+int		clients[99999] = { -1 };
+int		id;
+int		max_fd;
 
 int	main(int c, char **v)
 {
 	int					res;
-	int 				sMaster;
-	int					max_fd;
+	int					sMaster;
 	socklen_t			len;
-	char				buffer[999999];
 	struct sockaddr_in	addr;
-	fd_set				set;
-	fd_set				w_set;
-	fd_set				r_set;
+
 
 	if (c != 2)
 		panic("Wrong number of arguments\n");
@@ -32,10 +35,10 @@ int	main(int c, char **v)
 	if (sMaster < 0)
 		panic("Fatal error\n");
 	bzero(&addr, sizeof(addr));
-	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	addr.sin_port = htons(atoi(v[1]));
-	len = sizeof(struct sockaddr_in);
+	addr.sin_family = AF_INET;
+	len = sizeof(addr);
 	res = bind(sMaster, (struct sockaddr *) &addr, len);
 	if (res < 0)
 		panic("Fatal error\n");
@@ -43,8 +46,8 @@ int	main(int c, char **v)
 	if (res < 0)
 		panic("Fatal error\n");
 	FD_ZERO(&set);
-	FD_ZERO(&w_set);
 	FD_ZERO(&r_set);
+	FD_ZERO(&w_set);
 	FD_SET(sMaster, &set);
 	max_fd = sMaster;
 	while (1)
@@ -56,35 +59,25 @@ int	main(int c, char **v)
 			panic("Fatal error\n");
 		for (int i = 0; i <= max_fd; i++)
 		{
+			bzero(read_buffer, sizeof(read_buffer));
+			bzero(send_buffer, sizeof(read_buffer));
 			if (!FD_ISSET(i, &r_set))
 				continue ;
-			bzero(buffer, sizeof(buffer));
-			printf("testing 1\n");
 			if (i == sMaster)
-			{
-				max_fd = integrateNewConnection(max_fd, sMaster, &set, (struct sockaddr *) &addr, &len);
-				sprintf(buffer, "server: client %d just arrived\n", id);
-				broadcast(max_fd, sMaster, buffer, &set);
-			}
+				new_connection(sMaster, (struct sockaddr *) &addr, &len);
 			else
 			{
-				res = recv(i, buffer, sizeof(buffer), 0);
-				if (res < 0)
-					panic("Fatal error\n");
+				res = recv(i, read_buffer, sizeof(read_buffer), 0);
 				if (res == 0)
+					disconnect(sMaster, i);
+				else if (res > 0)
 				{
-					FD_CLR(i, &set);
-					close(i);
-					sprintf(buffer, "server: client %d just left\n", clients[i]);
-					broadcast(max_fd, sMaster, buffer, &w_set);
-					clients[i] = -1;
-					continue ;
+					sprintf(send_buffer, "client %d: %s", clients[i], read_buffer);
+					broadcast(sMaster, max_fd, i);
 				}
-				broadcast(max_fd, sMaster, buffer, &w_set);
 			}
 		}
 	}
-	return (0);
 }
 
 void	panic(const char *msg)
@@ -93,7 +86,7 @@ void	panic(const char *msg)
 	exit(EXIT_FAILURE);
 }
 
-int		ft_strlen(const char *str)
+size_t	ft_strlen(const char *str)
 {
 	int	i;
 
@@ -103,25 +96,36 @@ int		ft_strlen(const char *str)
 	return (i);
 }
 
-int		integrateNewConnection(int max_fds, int masterSocket, fd_set *fds, struct sockaddr *addr, socklen_t *len)
+void	broadcast(int master, int max, int exclude)
+{
+	for (int i = 0; i <= max; i++)
+	{
+		if (FD_ISSET(i, &set))
+		{
+			if (i != master && i != exclude)
+				send(i, send_buffer, ft_strlen(send_buffer), 0);
+		}
+	}
+}
+
+void	new_connection(int master, struct sockaddr *addr, socklen_t *len)
 {
 	int	res;
 
-	res = accept(masterSocket, addr, len);
+	res = accept(master, addr, len);
 	if (res < 0)
 		panic("Fatal error\n");
-	FD_SET(res, fds);
 	clients[res] = id++;
-	res = res > max_fds ? res : max_fds;
-	return (res);
+	FD_SET(res, &set);
+	max_fd = res > max_fd ? res : max_fd;
+	sprintf(send_buffer, "server: client %d just arrived\n", clients[res]);
+	broadcast(master, max_fd, res);
 }
 
-void	broadcast(int max_fds, int socketMaster, char *msg, fd_set *fds)
+void	disconnect(int master, int index)
 {
-	for (int i = 0; i <= max_fds; i++)
-	{
-		if (FD_ISSET(i, fds))
-			if (i != socketMaster)
-				send(i, msg, ft_strlen(msg), 0);
-	}
+	FD_CLR(index, &set);
+	close(index);
+	sprintf(send_buffer, "server: client %d just left\n", clients[index]);
+	broadcast(master, max_fd, index);
 }
